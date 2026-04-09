@@ -1,20 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# CI workflow: Validate reusable workflows for correctness and security
+# Internal CI: Validate this repository's reusable workflows
 #
-# Runs actionlint (syntax/semantics), zizmor (security audit), and poutine
-# (supply-chain analysis) against all workflow files on every PR and push.
+# Calls the ci-actions.yml reusable workflow to run actionlint, zizmor, and
+# poutine against all workflow files on every PR and push to main.
 #
-# Failure policy:
-#   - actionlint: fails on any finding (strict syntax/semantics)
-#   - zizmor: fails on medium+ severity; displays all findings for visibility
-#   - poutine: fails on any violation except known-acceptable rules
-#
-# Supply-chain hardening:
-#   - All actions pinned to commit SHA (immutable references)
-#   - persist-credentials: false on all checkouts
-#   - Tool versions pinned explicitly
-#   - Go module proxy provides checksum-db-backed integrity for Go tools
-#   - Minimal permissions (contents: read only)
+# Known-acceptable findings (skipped via configuration):
+#   - poutine untrusted_checkout_exec: inherent to Docker build workflows
+#   - poutine github_action_from_unverified_creator_used: golangci-lint is the
+#     de facto standard Go linter action
+#   - zizmor low template-injection: env.CONTEXT in docker-build-push.yml is
+#     validated against path traversal before reaching docker/build-push-action
 # ─────────────────────────────────────────────────────────────────────────────
 ---
 name: CI Workflows
@@ -36,99 +31,10 @@ concurrency:
 permissions: {}
 
 jobs:
-  # ───────────────────────────────────────────────────────────────────────────
-  actionlint:
-    name: actionlint
-    runs-on: ubuntu-latest
+  ci:
+    uses: ./.github/workflows/ci-actions.yml
+    with:
+      zizmor-fail-severity: "medium"
+      poutine-skip-rules: "untrusted_checkout_exec,github_action_from_unverified_creator_used"
     permissions:
-      contents: read # Checkout repository
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
-        with:
-          go-version: "stable"
-          cache: false
-
-      - name: Install actionlint
-        env:
-          ACTIONLINT_VERSION: "v1.7.12"
-        run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
-
-      - name: Run actionlint
-        run: actionlint
-
-  # ───────────────────────────────────────────────────────────────────────────
-  zizmor:
-    name: zizmor
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read # Checkout repository
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.x"
-
-      - name: Install zizmor
-        env:
-          ZIZMOR_VERSION: "1.23.1"
-        run: pip install "zizmor==${ZIZMOR_VERSION}"
-
-      - name: Run zizmor
-        run: |
-          set +e
-          zizmor --format plain .github/workflows/
-          exit_code=$?
-          set -e
-
-          # zizmor exit codes: 0=clean, 10=info, 11=unknown, 12=low, 13=medium, 14=high
-          # Fail on medium+ (exit >= 13); allow low-severity known findings
-          # Known low: env.CONTEXT template-injection in docker-build-push.yml (mitigated by input validation)
-          if [ "$exit_code" -ge 13 ]; then
-            echo "::error::zizmor found medium or higher severity findings"
-            exit 1
-          fi
-          echo "zizmor passed (exit code: ${exit_code})"
-
-  # ───────────────────────────────────────────────────────────────────────────
-  poutine:
-    name: poutine
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read # Checkout repository
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
-        with:
-          go-version: "stable"
-          cache: false
-
-      - name: Install poutine
-        env:
-          POUTINE_VERSION: "v1.1.3"
-        run: go install "github.com/boostsecurityio/poutine@${POUTINE_VERSION}"
-
-      - name: Run poutine
-        # --fail-on-violation: exit non-zero when violations are found
-        # --skip: known-acceptable rules:
-        #   - untrusted_checkout_exec: inherent to Docker build workflows (checkout + docker build)
-        #   - github_action_from_unverified_creator_used: golangci-lint is the de facto standard Go linter
-        run: |
-          poutine analyze_local . \
-            --fail-on-violation \
-            --skip untrusted_checkout_exec,github_action_from_unverified_creator_used
+      contents: read

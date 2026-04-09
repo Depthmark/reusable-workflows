@@ -1,0 +1,185 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable CI workflow: Validate GitHub Actions workflows for security
+#
+# Runs actionlint (syntax/semantics), zizmor (security audit), and poutine
+# (supply-chain analysis) against all workflow files in the caller repository.
+#
+# Usage:
+#   jobs:
+#     ci:
+#       uses: Depthmark/reusable-workflows/.github/workflows/ci-actions.yml@main
+#       with:
+#         poutine-skip-rules: "untrusted_checkout_exec"
+#       permissions:
+#         contents: read
+#
+# Supply-chain hardening:
+#   - All actions pinned to commit SHA (immutable references)
+#   - No ${{ }} expressions in run: blocks (prevents script injection)
+#   - persist-credentials: false on all checkouts
+#   - Tool versions pinned explicitly
+#   - Go module proxy provides checksum-db-backed integrity for Go tools
+#   - Minimal permissions scoped per-job
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: CI Actions
+
+on:
+  workflow_call:
+    inputs:
+      actionlint-version:
+        description: "actionlint version to install"
+        type: string
+        default: "v1.7.12"
+      zizmor-version:
+        description: "zizmor version to install"
+        type: string
+        default: "1.23.1"
+      poutine-version:
+        description: "poutine version to install"
+        type: string
+        default: "v1.1.3"
+      zizmor-fail-severity:
+        description: "Minimum zizmor severity to fail on (low, medium, high)"
+        type: string
+        default: "medium"
+      poutine-skip-rules:
+        description: "Comma-separated poutine rule IDs to skip (e.g., untrusted_checkout_exec,github_action_from_unverified_creator_used)"
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Checkout repository
+    env:
+      ACTIONLINT_VERSION: ${{ inputs.actionlint-version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate actionlint version
+        run: |
+          if ! [[ "$ACTIONLINT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid actionlint version format: ${ACTIONLINT_VERSION}"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        with:
+          go-version: "stable"
+          cache: false
+
+      - name: Install actionlint
+        run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+
+      - name: Run actionlint
+        run: actionlint
+
+  # ───────────────────────────────────────────────────────────────────────────
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Checkout repository
+    env:
+      ZIZMOR_VERSION: ${{ inputs.zizmor-version }}
+      ZIZMOR_FAIL_SEVERITY: ${{ inputs.zizmor-fail-severity }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate zizmor version
+        run: |
+          if ! [[ "$ZIZMOR_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid zizmor version format: ${ZIZMOR_VERSION}"
+            exit 1
+          fi
+
+      - name: Validate zizmor-fail-severity
+        run: |
+          case "$ZIZMOR_FAIL_SEVERITY" in
+            low|medium|high) echo "Fail severity: ${ZIZMOR_FAIL_SEVERITY}" ;;
+            *) echo "::error::Invalid zizmor-fail-severity: ${ZIZMOR_FAIL_SEVERITY} (must be low, medium, or high)"; exit 1 ;;
+          esac
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.x"
+
+      - name: Install zizmor
+        run: pip install "zizmor==${ZIZMOR_VERSION}"
+
+      - name: Run zizmor
+        run: |
+          # Map severity to zizmor exit code thresholds
+          # zizmor exit codes: 0=clean, 10=info, 11=unknown, 12=low, 13=medium, 14=high
+          case "$ZIZMOR_FAIL_SEVERITY" in
+            low)    threshold=12 ;;
+            medium) threshold=13 ;;
+            high)   threshold=14 ;;
+          esac
+
+          set +e
+          zizmor --format plain .github/workflows/
+          exit_code=$?
+          set -e
+
+          if [ "$exit_code" -ge "$threshold" ]; then
+            echo "::error::zizmor found findings at or above '${ZIZMOR_FAIL_SEVERITY}' severity"
+            exit 1
+          fi
+          echo "zizmor passed (exit code: ${exit_code}, threshold: ${threshold})"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  poutine:
+    name: poutine
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Checkout repository
+    env:
+      POUTINE_VERSION: ${{ inputs.poutine-version }}
+      POUTINE_SKIP_RULES: ${{ inputs.poutine-skip-rules }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate poutine version
+        run: |
+          if ! [[ "$POUTINE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid poutine version format: ${POUTINE_VERSION}"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        with:
+          go-version: "stable"
+          cache: false
+
+      - name: Install poutine
+        run: go install "github.com/boostsecurityio/poutine@${POUTINE_VERSION}"
+
+      - name: Run poutine
+        run: |
+          SKIP_ARG=""
+          if [ -n "$POUTINE_SKIP_RULES" ]; then
+            SKIP_ARG="--skip ${POUTINE_SKIP_RULES}"
+          fi
+          # SKIP_ARG is intentionally unquoted for word splitting into arguments.
+          # This value comes from the calling workflow YAML (trusted).
+          # shellcheck disable=SC2086
+          poutine analyze_local . --fail-on-violation ${SKIP_ARG}
