@@ -1,0 +1,271 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable workflow: Package, push, sign, and attest Helm charts
+#
+# Packages a Helm chart, pushes to an OCI registry (GHCR), signs with cosign
+# (keyless via Sigstore), generates SLSA build provenance, and optionally
+# uploads the chart .tgz to a GitHub release.
+#
+# Usage:
+#   jobs:
+#     helm:
+#       uses: Depthmark/reusable-workflows/.github/workflows/helm-package-push.yml@main
+#       with:
+#         tag_name: ${{ needs.release.outputs.tag_name }}
+#         chart-dir: "charts/my-chart"
+#       permissions:
+#         contents: write
+#         packages: write
+#         id-token: write
+#         attestations: write
+#
+# Supply-chain hardening:
+#   - tag_name validated against strict regex before any use
+#   - chart-dir validated against path traversal and restricted character set
+#   - Version consistency verified between tag and Chart.yaml
+#   - No ${{ }} expressions in run: blocks (prevents script injection)
+#   - All actions pinned to commit SHA (immutable references)
+#   - persist-credentials: false on all checkouts
+#   - Cosign keyless signing via Sigstore OIDC
+#   - SLSA build provenance attestation
+#   - Minimal permissions scoped per-job
+#   - GitHub environment protection rules supported
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: Helm Package & Push
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g., v1.2.3 or my-chart-v1.2.3)"
+        required: true
+        type: string
+      chart-dir:
+        description: "Relative path to the Helm chart directory (e.g., charts/my-chart)"
+        required: true
+        type: string
+      environment:
+        description: "GitHub environment for deployment protection rules"
+        type: string
+        default: "release"
+      upload-to-release:
+        description: "Upload packaged chart to the GitHub release"
+        type: boolean
+        default: true
+      sign:
+        description: "Sign the chart with cosign (keyless via Sigstore)"
+        type: boolean
+        default: true
+      attest:
+        description: "Generate SLSA build provenance attestation"
+        type: boolean
+        default: true
+    outputs:
+      chart-name:
+        description: "Helm chart name from Chart.yaml"
+        value: ${{ jobs.helm.outputs.chart-name }}
+      chart-version:
+        description: "Helm chart version from Chart.yaml"
+        value: ${{ jobs.helm.outputs.chart-version }}
+      digest:
+        description: "OCI artifact digest (sha256:...)"
+        value: ${{ jobs.helm.outputs.digest }}
+
+permissions: {}
+
+jobs:
+  helm:
+    name: Publish Helm Chart
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: write # Upload chart to GitHub release
+      packages: write # Push OCI artifact to GHCR
+      id-token: write # Keyless cosign signing via Sigstore OIDC
+      attestations: write # Generate SLSA build provenance
+    outputs:
+      chart-name: ${{ steps.chart_info.outputs.chart_name }}
+      chart-version: ${{ steps.chart_info.outputs.chart_version }}
+      digest: ${{ steps.publish.outputs.digest }}
+    env:
+      TAG_NAME: ${{ inputs.tag_name }}
+      CHART_DIR: ${{ inputs.chart-dir }}
+    steps:
+      # ── Input validation ──────────────────────────────────────────────────
+      - name: Validate tag_name
+        run: |
+          # Strict regex: optional component prefix, v-prefixed semver, optional pre-release/build metadata
+          # Rejects shell metacharacters ($, ;, `, |, &, etc.) to prevent injection
+          if ! [[ "$TAG_NAME" =~ ^([a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?-)?v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|dev)\.[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Invalid tag format: '${TAG_NAME}'"
+            echo "Expected: v1.2.3, my-chart-v1.2.3, v1.2.3-rc.1"
+            exit 1
+          fi
+          echo "Tag validated: ${TAG_NAME}"
+
+      - name: Validate chart-dir
+        run: |
+          # Reject path traversal
+          if echo "$CHART_DIR" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::chart-dir must not contain path traversal (..)"
+            exit 1
+          fi
+          # Reject absolute paths
+          if [[ "$CHART_DIR" == /* ]]; then
+            echo "::error::chart-dir must be a relative path"
+            exit 1
+          fi
+          # Reject characters outside safe set
+          if ! [[ "$CHART_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::chart-dir contains invalid characters"
+            exit 1
+          fi
+          echo "Chart dir validated: ${CHART_DIR}"
+
+      # ── Setup ─────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Install cosign
+        if: ${{ inputs.sign }}
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Chart info & version check ────────────────────────────────────────
+      - name: Get chart info
+        id: chart_info
+        run: |
+          CHART_NAME=$(helm show chart "$CHART_DIR" | grep '^name:' | cut -d' ' -f2)
+          CHART_VERSION=$(helm show chart "$CHART_DIR" | grep '^version:' | awk '{print $2}')
+
+          if [ -z "$CHART_NAME" ] || [ -z "$CHART_VERSION" ]; then
+            echo "::error::Failed to extract chart name or version from ${CHART_DIR}/Chart.yaml"
+            exit 1
+          fi
+
+          LOWERCASE_OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "oci_registry=${LOWERCASE_OWNER}" >> "$GITHUB_OUTPUT"
+          echo "chart_name=${CHART_NAME}" >> "$GITHUB_OUTPUT"
+          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Chart: ${CHART_NAME} v${CHART_VERSION}"
+
+      - name: Verify version consistency
+        env:
+          CHART_VERSION: ${{ steps.chart_info.outputs.chart_version }}
+        run: |
+          # Extract version from tag (handle both "v1.2.3" and "component-v1.2.3")
+          if [[ "$TAG_NAME" == *-v* ]]; then
+            TAG_VERSION="${TAG_NAME##*-v}"
+          else
+            TAG_VERSION="${TAG_NAME#v}"
+          fi
+
+          if [ "$CHART_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch! Chart.yaml: ${CHART_VERSION}, Tag: ${TAG_VERSION}"
+            exit 1
+          fi
+          echo "Version consistency verified: ${TAG_VERSION}"
+
+      # ── Package & Publish ─────────────────────────────────────────────────
+      - name: Package and publish chart
+        id: publish
+        env:
+          OCI_REGISTRY: ${{ steps.chart_info.outputs.oci_registry }}
+          CHART_NAME: ${{ steps.chart_info.outputs.chart_name }}
+          CHART_VERSION: ${{ steps.chart_info.outputs.chart_version }}
+        run: |
+          echo "Updating Helm dependencies..."
+          helm dependency update "$CHART_DIR"
+
+          echo "Packaging Helm chart..."
+          helm package "$CHART_DIR"
+          CHART_PACKAGE="${CHART_NAME}-${CHART_VERSION}.tgz"
+
+          if [ ! -f "$CHART_PACKAGE" ]; then
+            echo "::error::Chart package not found: ${CHART_PACKAGE}"
+            exit 1
+          fi
+
+          echo "chart_package_path=${CHART_PACKAGE}" >> "$GITHUB_OUTPUT"
+          echo "Chart packaged: ${CHART_PACKAGE}"
+
+          OCI_URL="oci://ghcr.io/${OCI_REGISTRY}/charts"
+          echo "Pushing to ${OCI_URL}"
+          helm_push_output=$(helm push "$CHART_PACKAGE" "$OCI_URL" 2>&1)
+          echo "$helm_push_output"
+
+          DIGEST=$(echo "$helm_push_output" | grep -o 'sha256:[a-z0-9]*')
+          if [ -z "$DIGEST" ]; then
+            echo "::error::Failed to extract digest from helm push output"
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Published with digest: ${DIGEST}"
+
+      # ── Sign & Attest ────────────────────────────────────────────────────
+      - name: Sign chart with cosign
+        if: ${{ inputs.sign }}
+        env:
+          OCI_REGISTRY: ${{ steps.chart_info.outputs.oci_registry }}
+          CHART_NAME: ${{ steps.chart_info.outputs.chart_name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          CHART_REF="ghcr.io/${OCI_REGISTRY}/charts/${CHART_NAME}@${DIGEST}"
+          echo "Signing: ${CHART_REF}"
+          cosign sign --yes "$CHART_REF"
+          echo "Chart signed successfully"
+
+      - name: Generate build attestation
+        if: ${{ inputs.attest }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ steps.chart_info.outputs.oci_registry }}/charts/${{ steps.chart_info.outputs.chart_name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      # ── Release upload ────────────────────────────────────────────────────
+      - name: Upload chart to release
+        if: ${{ inputs.upload-to-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHART_PACKAGE: ${{ steps.publish.outputs.chart_package_path }}
+        run: |
+          gh release upload "$TAG_NAME" "$CHART_PACKAGE" --clobber
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Create success summary
+        env:
+          OCI_REGISTRY: ${{ steps.chart_info.outputs.oci_registry }}
+          CHART_NAME: ${{ steps.chart_info.outputs.chart_name }}
+          CHART_VERSION: ${{ steps.chart_info.outputs.chart_version }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          {
+            echo "## Helm Chart Released Successfully!"
+            echo ""
+            echo "**Chart:** ${CHART_NAME}"
+            echo "**Version:** ${CHART_VERSION}"
+            echo "**Registry:** ghcr.io/${OCI_REGISTRY}/charts/${CHART_NAME}"
+            echo ""
+            echo "### Installation"
+            echo '```bash'
+            echo "helm install my-release oci://ghcr.io/${OCI_REGISTRY}/charts/${CHART_NAME} --version ${CHART_VERSION}"
+            echo '```'
+            echo ""
+            echo "### Verification"
+            echo '```bash'
+            echo "cosign verify ghcr.io/${OCI_REGISTRY}/charts/${CHART_NAME}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
