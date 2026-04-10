@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/Depthmark/reusable-workflows/compare/v1.0.0...v1.0.1) (2026-04-10)
+
+
+### Bug Fixes
+
+* input injection ([c2e30fd](https://github.com/Depthmark/reusable-workflows/commit/c2e30fdc95a2bc3959e48f021eb111ad0d22a51f))
+
 ## 1.0.0 (2026-04-10)
 
 
