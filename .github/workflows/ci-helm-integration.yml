@@ -1,0 +1,218 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable CI workflow for Helm chart KinD integration tests
+#
+# Creates a KinD cluster, installs the chart, and runs helm test.
+# Optionally builds and loads a Docker image into the cluster.
+#
+# Usage (minimal):
+#   jobs:
+#     integration:
+#       uses: Depthmark/reusable-workflows/.github/workflows/ci-helm-integration.yml@main
+#       with:
+#         chart-dir: "charts/my-chart"
+#
+# Usage (with Docker image build from external source repo):
+#   jobs:
+#     integration:
+#       uses: Depthmark/reusable-workflows/.github/workflows/ci-helm-integration.yml@main
+#       with:
+#         chart-dir: "charts/my-app"
+#         release-name: "my-app"
+#         namespace: "my-app-test"
+#         docker-image: "ghcr.io/org/my-app:latest"
+#         source-repository: "org/my-app"
+#         docker-build-context: "source"
+#         helm-set-values: "image.pullPolicy=Never"
+#
+# Supply-chain hardening:
+#   - All actions pinned to commit SHA (immutable references)
+#   - No ${{ }} expressions in run: blocks (prevents script injection)
+#   - chart-dir validated against path traversal
+#   - persist-credentials: false on all checkouts
+#   - Minimal permissions scoped per-job
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: CI Helm Integration
+
+on:
+  workflow_call:
+    inputs:
+      chart-dir:
+        description: "Relative path to the Helm chart directory (e.g., charts/my-chart)"
+        required: true
+        type: string
+      release-name:
+        description: "Helm release name"
+        type: string
+        default: "test-release"
+      namespace:
+        description: "Kubernetes namespace for the test"
+        type: string
+        default: "test"
+      cluster-name:
+        description: "KinD cluster name"
+        type: string
+        default: "chart-test"
+      helm-set-values:
+        description: "Comma-separated Helm --set values (e.g., 'key1=val1,key2=val2')"
+        type: string
+        default: ""
+      helm-values-files:
+        description: "Comma-separated values files relative to the repo root (e.g., 'charts/my-chart/ci/test-values.yaml')"
+        type: string
+        default: ""
+      timeout:
+        description: "Helm install timeout"
+        type: string
+        default: "120s"
+      run-helm-test:
+        description: "Whether to run helm test after install"
+        type: boolean
+        default: true
+      docker-image:
+        description: "Docker image name:tag to build and load into KinD (optional, skip if empty)"
+        type: string
+        default: ""
+      docker-build-context:
+        description: "Docker build context path (default: '.')"
+        type: string
+        default: "."
+      source-repository:
+        description: "External repository to checkout for Docker build (e.g., 'org/repo'). If empty, uses the calling repository."
+        type: string
+        default: ""
+      source-repository-path:
+        description: "Path to checkout the source repository into"
+        type: string
+        default: "source"
+
+permissions: {}
+
+jobs:
+  kind-integration:
+    name: KinD Integration Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate chart-dir
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: |
+          if echo "$CHART_DIR" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::chart-dir must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$CHART_DIR" == /* ]]; then
+            echo "::error::chart-dir must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$CHART_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::chart-dir contains invalid characters"
+            exit 1
+          fi
+
+      - name: Checkout source repository
+        if: ${{ inputs.source-repository != '' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.source-repository }}
+          path: ${{ inputs.source-repository-path }}
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Create KinD cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          cluster_name: ${{ inputs.cluster-name }}
+
+      - name: Build and load Docker image into KinD
+        if: ${{ inputs.docker-image != '' }}
+        env:
+          DOCKER_IMAGE: ${{ inputs.docker-image }}
+          BUILD_CONTEXT: ${{ inputs.docker-build-context }}
+          CLUSTER_NAME: ${{ inputs.cluster-name }}
+        run: |
+          docker build -t "$DOCKER_IMAGE" "$BUILD_CONTEXT"
+          kind load docker-image "$DOCKER_IMAGE" --name "$CLUSTER_NAME"
+
+      - name: Create test namespace
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+        run: kubectl create namespace "$NAMESPACE"
+
+      - name: Install chart
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+          RELEASE_NAME: ${{ inputs.release-name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          HELM_SET_VALUES: ${{ inputs.helm-set-values }}
+          HELM_VALUES_FILES: ${{ inputs.helm-values-files }}
+          TIMEOUT: ${{ inputs.timeout }}
+        run: |
+          ARGS=(install "$RELEASE_NAME" "$CHART_DIR")
+          ARGS+=(--namespace "$NAMESPACE" --wait --timeout "$TIMEOUT")
+
+          if [ -n "$HELM_SET_VALUES" ]; then
+            ARGS+=(--set "$HELM_SET_VALUES")
+          fi
+
+          if [ -n "$HELM_VALUES_FILES" ]; then
+            IFS=',' read -ra FILES <<< "$HELM_VALUES_FILES"
+            for f in "${FILES[@]}"; do
+              f=$(echo "$f" | xargs)
+              ARGS+=(-f "$f")
+            done
+          fi
+
+          echo "Running: helm ${ARGS[*]}"
+          helm "${ARGS[@]}"
+
+      - name: Verify deployments are running
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+        run: |
+          kubectl -n "$NAMESPACE" get deployments
+          for deploy in $(kubectl -n "$NAMESPACE" get deployments -o jsonpath='{.items[*].metadata.name}'); do
+            echo "Waiting for deployment ${deploy}..."
+            kubectl -n "$NAMESPACE" rollout status deployment/"$deploy" --timeout=60s
+          done
+
+      - name: Verify pods are ready
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+        run: |
+          kubectl -n "$NAMESPACE" get pods
+          kubectl -n "$NAMESPACE" wait --for=condition=Ready pods --all \
+            --timeout=60s --field-selector=status.phase!=Succeeded
+
+      - name: Run Helm tests
+        if: ${{ inputs.run-helm-test }}
+        env:
+          RELEASE_NAME: ${{ inputs.release-name }}
+          NAMESPACE: ${{ inputs.namespace }}
+        run: helm test "$RELEASE_NAME" --namespace "$NAMESPACE" --timeout 60s
+
+      - name: Collect debug info on failure
+        if: failure()
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+        run: |
+          echo "=== Pods ==="
+          kubectl -n "$NAMESPACE" get pods -o wide
+          echo "=== Pod Describe ==="
+          kubectl -n "$NAMESPACE" describe pods
+          echo "=== Pod Logs ==="
+          for pod in $(kubectl -n "$NAMESPACE" get pods -o jsonpath='{.items[*].metadata.name}'); do
+            echo "--- Logs for ${pod} ---"
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 || true
+          done
+          echo "=== Events ==="
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp

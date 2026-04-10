@@ -156,9 +156,11 @@ jobs:
           fi
 
           LOWERCASE_OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          echo "oci_registry=${LOWERCASE_OWNER}" >> "$GITHUB_OUTPUT"
-          echo "chart_name=${CHART_NAME}" >> "$GITHUB_OUTPUT"
-          echo "chart_version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "oci_registry=${LOWERCASE_OWNER}"
+            echo "chart_name=${CHART_NAME}"
+            echo "chart_version=${CHART_VERSION}"
+          } >> "$GITHUB_OUTPUT"
           echo "Chart: ${CHART_NAME} v${CHART_VERSION}"
 
       - name: Verify version consistency

@@ -92,10 +92,11 @@ jobs:
       - name: Run tests
         env:
           TEST_FLAGS: ${{ inputs.test-flags }}
-        # TEST_FLAGS is intentionally unquoted for word splitting into arguments.
-        # This value comes from the calling workflow YAML (trusted).
-        # shellcheck disable=SC2086
-        run: go test ${TEST_FLAGS} ./... 2>&1 | tee test-output.txt
+        run: |
+          # TEST_FLAGS is intentionally unquoted for word splitting into arguments.
+          # This value comes from the calling workflow YAML (trusted).
+          # shellcheck disable=SC2086
+          go test ${TEST_FLAGS} ./... 2>&1 | tee test-output.txt
 
       - name: Upload test results
         if: always()
@@ -128,10 +129,11 @@ jobs:
         env:
           BUILD_FLAGS: ${{ inputs.build-flags }}
           BUILD_PACKAGES: ${{ inputs.build-packages }}
-        # BUILD_FLAGS/BUILD_PACKAGES are intentionally unquoted for word splitting.
-        # These values come from the calling workflow YAML (trusted).
-        # shellcheck disable=SC2086
-        run: CGO_ENABLED=0 go build ${BUILD_FLAGS} ${BUILD_PACKAGES}
+        run: |
+          # BUILD_FLAGS/BUILD_PACKAGES are intentionally unquoted for word splitting.
+          # These values come from the calling workflow YAML (trusted).
+          # shellcheck disable=SC2086
+          CGO_ENABLED=0 go build ${BUILD_FLAGS} ${BUILD_PACKAGES}
 
       - name: Vet
         run: go vet ./...

@@ -188,9 +188,11 @@ jobs:
           MAJOR="${VERSION%%.*}"
           REST="${VERSION#*.}"
           MINOR="${MAJOR}.${REST%%.*}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "major=${MAJOR}" >> "$GITHUB_OUTPUT"
-          echo "minor=${MINOR}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${VERSION}"
+            echo "major=${MAJOR}"
+            echo "minor=${MINOR}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         if: ${{ inputs.sign }}
