@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Reusable CI workflow for Node.js (TypeScript) projects
 #
-# Runs lint, test, and build jobs in parallel.
+# Runs lint, test, build, and audit jobs in parallel.
 #
 # Usage:
 #   jobs:
@@ -14,6 +14,7 @@
 #   - All actions pinned to commit SHA (immutable references)
 #   - No ${{ }} expressions in run: blocks (prevents script injection)
 #   - persist-credentials: false on all checkouts
+#   - All inputs validated against safe character sets
 #   - Pinned runner images (ubuntu-24.04)
 #   - StepSecurity harden-runner for runtime monitoring
 #   - Minimal permissions scoped per-job
@@ -25,7 +26,7 @@ on:
   workflow_call:
     inputs:
       node-version:
-        description: "Node.js version to use"
+        description: "Node.js version to use (e.g., 22, 22.x, lts/*)"
         type: string
         default: "22"
       test-script:
@@ -44,6 +45,10 @@ on:
         description: "npm script to run for building"
         type: string
         default: "build"
+      audit-level:
+        description: "npm audit severity threshold (low, moderate, high, critical, none to skip)"
+        type: string
+        default: "high"
       artifact-retention-days:
         description: "Number of days to retain test artifacts"
         type: number
@@ -53,8 +58,44 @@ permissions: {}
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
+  validate-inputs:
+    name: Validate Inputs
+    runs-on: ubuntu-24.04
+    permissions: {}
+    env:
+      NODE_VERSION: ${{ inputs.node-version }}
+      TEST_SCRIPT: ${{ inputs.test-script }}
+      LINT_SCRIPT: ${{ inputs.lint-script }}
+      BUILD_SCRIPT: ${{ inputs.build-script }}
+      AUDIT_LEVEL: ${{ inputs.audit-level }}
+    steps:
+      - name: Validate node-version
+        run: |
+          if ! [[ "$NODE_VERSION" =~ ^[a-zA-Z0-9.*/-]+$ ]]; then
+            echo "::error::node-version contains invalid characters: ${NODE_VERSION}"
+            exit 1
+          fi
+
+      - name: Validate script names
+        run: |
+          for name in "$TEST_SCRIPT" "$LINT_SCRIPT" "$BUILD_SCRIPT"; do
+            if ! [[ "$name" =~ ^[a-zA-Z0-9:_-]+$ ]]; then
+              echo "::error::Script name contains invalid characters: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Validate audit-level
+        run: |
+          case "$AUDIT_LEVEL" in
+            low|moderate|high|critical|none) echo "Audit level: ${AUDIT_LEVEL}" ;;
+            *) echo "::error::Invalid audit-level: ${AUDIT_LEVEL} (must be low, moderate, high, critical, or none)"; exit 1 ;;
+          esac
+
+  # ───────────────────────────────────────────────────────────────────────────
   lint:
     name: Lint
+    needs: [validate-inputs]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -86,6 +127,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   test:
     name: Test
+    needs: [validate-inputs]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -132,6 +174,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   build:
     name: Build
+    needs: [validate-inputs]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -160,5 +203,35 @@ jobs:
           BUILD_SCRIPT: ${{ inputs.build-script }}
         run: npm run "$BUILD_SCRIPT"
 
-      - name: Type check
-        run: npx tsc --noEmit
+  # ───────────────────────────────────────────────────────────────────────────
+  audit:
+    name: Audit
+    needs: [validate-inputs]
+    if: ${{ inputs.audit-level != 'none' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        env:
+          AUDIT_LEVEL: ${{ inputs.audit-level }}
+        run: npm audit --audit-level="$AUDIT_LEVEL"

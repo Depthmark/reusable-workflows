@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Release Please: Automated release management
+#
+# Creates release PRs from conventional commits, and publishes GitHub releases
+# when merged. Callers reference reusable workflows by tag (e.g., @v1.0.0).
+#
+# Supply-chain hardening:
+#   - release-please-action pinned to commit SHA
+#   - Authentication via github-sts (short-lived OIDC tokens, no PATs)
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
+#   - Minimal permissions scoped per-job
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - uses: Depthmark/github-sts-action@main
+        id: sts
+        with:
+          sts-url: https://github-sts-dev.adelisle.com
+          scope: Depthmark/reusable-workflows
+          identity: release
+          app: depthmark-release-bot
+
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ steps.sts.outputs.token }}
