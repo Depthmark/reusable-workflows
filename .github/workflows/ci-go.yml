@@ -1,0 +1,208 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable CI workflow for Go projects
+#
+# Runs lint, test, and build jobs in parallel.
+#
+# Usage:
+#   jobs:
+#     ci:
+#       uses: Depthmark/reusable-workflows/.github/workflows/ci-go.yml@main
+#       with:
+#         golangci-lint-version: "v2.11.4"
+#
+# Supply-chain hardening:
+#   - All actions pinned to commit SHA (immutable references)
+#   - No ${{ }} expressions in run: blocks (prevents script injection)
+#   - persist-credentials: false on all checkouts
+#   - go-version-file validated against path traversal
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
+#   - Minimal permissions scoped per-job
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: CI Go
+
+on:
+  workflow_call:
+    inputs:
+      go-version-file:
+        description: "Path to file containing Go version (go.mod or .go-version)"
+        type: string
+        default: "go.mod"
+      golangci-lint-version:
+        description: "golangci-lint binary version (e.g., v2.11.4)"
+        type: string
+        default: "v2.11.4"
+      test-flags:
+        description: "Flags passed to go test (e.g., -race -coverprofile=coverage.out -v)"
+        type: string
+        default: "-race -coverprofile=coverage.out -v"
+      build-packages:
+        description: "Go packages to build (e.g., ./cmd/myapp)"
+        type: string
+        default: "./..."
+      build-flags:
+        description: "Additional flags for go build (e.g., -ldflags=\"-s -w\")"
+        type: string
+        default: ""
+      artifact-retention-days:
+        description: "Number of days to retain test artifacts"
+        type: number
+        default: 30
+
+permissions: {}
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate go-version-file
+        env:
+          GO_VERSION_FILE: ${{ inputs.go-version-file }}
+        run: |
+          if echo "$GO_VERSION_FILE" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::go-version-file must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$GO_VERSION_FILE" == /* ]]; then
+            echo "::error::go-version-file must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$GO_VERSION_FILE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::go-version-file contains invalid characters"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd # v7.0.0
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate go-version-file
+        env:
+          GO_VERSION_FILE: ${{ inputs.go-version-file }}
+        run: |
+          if echo "$GO_VERSION_FILE" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::go-version-file must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$GO_VERSION_FILE" == /* ]]; then
+            echo "::error::go-version-file must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$GO_VERSION_FILE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::go-version-file contains invalid characters"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+
+      - name: Run tests
+        env:
+          TEST_FLAGS: ${{ inputs.test-flags }}
+        run: |
+          # TEST_FLAGS is intentionally unquoted for word splitting into arguments.
+          # This value comes from the calling workflow YAML (trusted).
+          # shellcheck disable=SC2086
+          go test ${TEST_FLAGS} ./... 2>&1 | tee test-output.txt
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: test-results
+          path: |
+            test-output.txt
+            coverage.out
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate go-version-file
+        env:
+          GO_VERSION_FILE: ${{ inputs.go-version-file }}
+        run: |
+          if echo "$GO_VERSION_FILE" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::go-version-file must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$GO_VERSION_FILE" == /* ]]; then
+            echo "::error::go-version-file must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$GO_VERSION_FILE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::go-version-file contains invalid characters"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+
+      - name: Build
+        env:
+          BUILD_FLAGS: ${{ inputs.build-flags }}
+          BUILD_PACKAGES: ${{ inputs.build-packages }}
+        run: |
+          # BUILD_FLAGS/BUILD_PACKAGES are intentionally unquoted for word splitting.
+          # These values come from the calling workflow YAML (trusted).
+          # shellcheck disable=SC2086
+          CGO_ENABLED=0 go build ${BUILD_FLAGS} ${BUILD_PACKAGES}
+
+      - name: Vet
+        run: go vet ./...

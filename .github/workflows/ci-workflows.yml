@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal CI: Validate this repository's reusable workflows
+#
+# Calls the ci-actions.yml reusable workflow to run actionlint, zizmor, and
+# poutine against all workflow files on every PR and push to main.
+#
+# Known-acceptable findings (skipped via configuration):
+#   - poutine untrusted_checkout_exec: inherent to Docker build workflows
+#   - poutine github_action_from_unverified_creator_used: golangci-lint is the
+#     de facto standard Go linter action
+#   - zizmor low template-injection: env.CONTEXT in docker-build-push.yml is
+#     validated against path traversal before reaching docker/build-push-action
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: CI Workflows
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci-actions.yml
+    with:
+      zizmor-fail-severity: "medium"
+      poutine-skip-rules: "untrusted_checkout_exec,github_action_from_unverified_creator_used"
+    permissions:
+      contents: read

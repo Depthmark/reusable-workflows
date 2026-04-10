@@ -1,0 +1,247 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable CI workflow for Helm chart projects
+#
+# Runs helm-docs validation, helm lint, and helm unittest in parallel.
+#
+# Usage:
+#   jobs:
+#     ci:
+#       uses: Depthmark/reusable-workflows/.github/workflows/ci-helm.yml@main
+#       with:
+#         chart-dir: "charts/my-chart"
+#
+# Supply-chain hardening:
+#   - All actions pinned to commit SHA (immutable references)
+#   - No ${{ }} expressions in run: blocks (prevents script injection)
+#   - chart-dir validated against path traversal
+#   - persist-credentials: false on all checkouts
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
+#   - Minimal permissions scoped per-job
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: CI Helm
+
+on:
+  workflow_call:
+    inputs:
+      chart-dir:
+        description: "Relative path to the Helm chart directory (e.g., charts/my-chart)"
+        required: true
+        type: string
+      helm-docs-version:
+        description: "helm-docs version to install"
+        type: string
+        default: "1.14.2"
+      run-helm-docs:
+        description: "Whether to run helm-docs validation"
+        type: boolean
+        default: true
+      run-unittest:
+        description: "Whether to run helm-unittest"
+        type: boolean
+        default: true
+      helm-unittest-version:
+        description: "helm-unittest plugin version to install"
+        type: string
+        default: "v1.0.3"
+
+permissions: {}
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  helm-docs:
+    name: Helm Docs
+    if: ${{ inputs.run-helm-docs }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate chart-dir
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: |
+          # Reject path traversal
+          if echo "$CHART_DIR" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::chart-dir must not contain path traversal (..)"
+            exit 1
+          fi
+          # Reject absolute paths
+          if [[ "$CHART_DIR" == /* ]]; then
+            echo "::error::chart-dir must be a relative path"
+            exit 1
+          fi
+          # Reject characters outside safe set
+          if ! [[ "$CHART_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::chart-dir contains invalid characters"
+            exit 1
+          fi
+
+      - name: Install helm-docs
+        env:
+          HELM_DOCS_VERSION: ${{ inputs.helm-docs-version }}
+        run: |
+          # Validate version format
+          if ! [[ "$HELM_DOCS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid helm-docs version format: ${HELM_DOCS_VERSION}"
+            exit 1
+          fi
+          BASE_URL="https://github.com/norwoodj/helm-docs/releases/download/v${HELM_DOCS_VERSION}"
+          TARBALL="helm-docs_${HELM_DOCS_VERSION}_Linux_x86_64.tar.gz"
+
+          # Download tarball and checksums file
+          curl -sSL -o "$TARBALL" "${BASE_URL}/${TARBALL}"
+          curl -sSL -o checksums.txt "${BASE_URL}/checksums.txt"
+
+          # Verify checksum matches
+          EXPECTED=$(grep "$TARBALL" checksums.txt | awk '{print $1}')
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::Checksum not found for ${TARBALL} in checksums.txt"
+            exit 1
+          fi
+          echo "${EXPECTED}  ${TARBALL}" | sha256sum --check --strict
+          echo "Checksum verified for ${TARBALL}"
+
+          tar xzf "$TARBALL" -C /usr/local/bin helm-docs
+          rm -f "$TARBALL" checksums.txt
+
+      - name: Run helm-docs
+        run: helm-docs
+
+      - name: Verify README is up to date
+        run: |
+          if ! git diff --quiet -- 'charts/*/README.md' 'helm/*/README.md'; then
+            echo "::error::README.md is out of date. Run 'make helm-docs' and commit the changes."
+            git diff -- '*/README.md'
+            exit 1
+          fi
+          echo "README.md is up to date."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm Lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate chart-dir
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: |
+          if echo "$CHART_DIR" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::chart-dir must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$CHART_DIR" == /* ]]; then
+            echo "::error::chart-dir must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$CHART_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::chart-dir contains invalid characters"
+            exit 1
+          fi
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Lint chart
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: helm lint "$CHART_DIR" --strict
+
+      - name: Lint chart with CI values
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: |
+          CI_VALUES_DIR="${CHART_DIR}/ci"
+          if [ -d "$CI_VALUES_DIR" ]; then
+            for f in "$CI_VALUES_DIR"/*.yaml; do
+              [ -f "$f" ] || continue
+              echo "=== Linting with ${f} ==="
+              helm lint "$CHART_DIR" --strict -f "$f"
+            done
+          else
+            echo "No CI values directory found at ${CI_VALUES_DIR}, skipping."
+          fi
+
+      - name: Render templates
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: helm template test "$CHART_DIR" > rendered.yaml
+
+      - name: Render templates with CI values
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: |
+          CI_VALUES_DIR="${CHART_DIR}/ci"
+          if [ -d "$CI_VALUES_DIR" ]; then
+            for f in "$CI_VALUES_DIR"/*.yaml; do
+              [ -f "$f" ] || continue
+              echo "=== Rendering with ${f} ==="
+              helm template test "$CHART_DIR" -f "$f" > /dev/null
+            done
+          fi
+
+      - name: Upload rendered manifests
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: rendered-manifests
+          path: rendered.yaml
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────────────
+  helm-unittest:
+    name: Helm Unit Tests
+    if: ${{ inputs.run-unittest }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+
+      - name: Install helm-unittest plugin
+        env:
+          HELM_UNITTEST_VERSION: ${{ inputs.helm-unittest-version }}
+        run: |
+          if ! [[ "$HELM_UNITTEST_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid helm-unittest version format: ${HELM_UNITTEST_VERSION}"
+            exit 1
+          fi
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --version "$HELM_UNITTEST_VERSION" --verify=false
+
+      - name: Run unit tests
+        env:
+          CHART_DIR: ${{ inputs.chart-dir }}
+        run: helm unittest "$CHART_DIR"

@@ -1,0 +1,295 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable workflow: Build, push, sign, and attest Docker images
+#
+# Builds a multi-platform Docker image, pushes to GHCR, signs with cosign
+# (keyless via Sigstore), and generates SLSA build provenance attestation.
+#
+# Usage:
+#   jobs:
+#     docker:
+#       uses: Depthmark/reusable-workflows/.github/workflows/docker-build-push.yml@main
+#       with:
+#         tag_name: ${{ needs.release.outputs.tag_name }}
+#       permissions:
+#         contents: read
+#         packages: write
+#         id-token: write
+#         attestations: write
+#
+# Supply-chain hardening:
+#   - tag_name validated against strict regex before any use
+#   - context and dockerfile validated against path traversal and restricted charset
+#   - No ${{ }} expressions in run: blocks (prevents script injection)
+#   - All actions pinned to commit SHA (immutable references)
+#   - persist-credentials: false on all checkouts
+#   - Cosign keyless signing via Sigstore OIDC
+#   - SLSA build provenance attestation
+#   - SBOM generation
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
+#   - Minimal permissions scoped per-job
+#   - GitHub environment protection rules supported
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: Docker Build & Push
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g., v1.2.3)"
+        required: true
+        type: string
+      image-name:
+        description: "Docker image name without registry (defaults to github.repository lowercased)"
+        type: string
+        default: ""
+      registry:
+        description: "Container registry"
+        type: string
+        default: "ghcr.io"
+      platforms:
+        description: "Target platforms for Docker buildx"
+        type: string
+        default: "linux/amd64,linux/arm64"
+      context:
+        description: "Docker build context path"
+        type: string
+        default: "."
+      dockerfile:
+        description: "Path to Dockerfile (relative to context)"
+        type: string
+        default: "Dockerfile"
+      build-args:
+        description: "Docker build arguments (newline-separated KEY=VALUE pairs)"
+        type: string
+        default: ""
+      environment:
+        description: "GitHub environment for deployment protection rules"
+        type: string
+        default: "release"
+      sign:
+        description: "Sign the image with cosign (keyless via Sigstore)"
+        type: boolean
+        default: true
+      attest:
+        description: "Generate SLSA build provenance attestation"
+        type: boolean
+        default: true
+    outputs:
+      version:
+        description: "Computed version (without v prefix)"
+        value: ${{ jobs.docker.outputs.version }}
+      digest:
+        description: "Docker image digest (sha256:...)"
+        value: ${{ jobs.docker.outputs.digest }}
+      image:
+        description: "Full image name (registry/name)"
+        value: ${{ jobs.docker.outputs.image }}
+
+permissions: {}
+
+jobs:
+  docker:
+    name: Docker
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read # Checkout repository at tag
+      packages: write # Push container images to GHCR
+      id-token: write # Keyless cosign signing via Sigstore OIDC
+      attestations: write # Generate SLSA build provenance
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.image.outputs.image }}
+    env:
+      REGISTRY: ${{ inputs.registry }}
+      TAG_NAME: ${{ inputs.tag_name }}
+      IMAGE_NAME_INPUT: ${{ inputs.image-name }}
+      CONTEXT: ${{ inputs.context }}
+      DOCKERFILE: ${{ inputs.dockerfile }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      # ── Input validation ──────────────────────────────────────────────────
+      - name: Validate tag_name
+        run: |
+          # Strict regex: optional component prefix, v-prefixed semver, optional pre-release/build metadata
+          # Rejects shell metacharacters ($, ;, `, |, &, etc.) to prevent injection
+          if ! [[ "$TAG_NAME" =~ ^([a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?-)?v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|dev)\.[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Invalid tag format: '${TAG_NAME}'"
+            echo "Expected: v1.2.3, component-v1.2.3, v1.2.3-rc.1, v1.2.3+build.1"
+            exit 1
+          fi
+          echo "Tag validated: ${TAG_NAME}"
+
+      - name: Validate context path
+        run: |
+          # Reject path traversal
+          if echo "$CONTEXT" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::context must not contain path traversal (..)"
+            exit 1
+          fi
+          # Reject absolute paths (must be relative to repo root)
+          if [[ "$CONTEXT" == /* ]]; then
+            echo "::error::context must be a relative path"
+            exit 1
+          fi
+          # Reject characters outside safe set
+          if ! [[ "$CONTEXT" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::context contains invalid characters"
+            exit 1
+          fi
+          echo "Context validated: ${CONTEXT}"
+
+      - name: Validate dockerfile path
+        run: |
+          # Reject path traversal
+          if echo "$DOCKERFILE" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::dockerfile must not contain path traversal (..)"
+            exit 1
+          fi
+          # Reject absolute paths
+          if [[ "$DOCKERFILE" == /* ]]; then
+            echo "::error::dockerfile must be a relative path"
+            exit 1
+          fi
+          # Reject characters outside safe set
+          if ! [[ "$DOCKERFILE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::dockerfile contains invalid characters"
+            exit 1
+          fi
+          echo "Dockerfile validated: ${DOCKERFILE}"
+
+      # ── Setup ─────────────────────────────────────────────────────────────
+      - name: Compute image name
+        id: image
+        run: |
+          if [ -n "$IMAGE_NAME_INPUT" ]; then
+            IMAGE_NAME="${IMAGE_NAME_INPUT,,}"
+          else
+            IMAGE_NAME="${GITHUB_REPOSITORY,,}"
+          fi
+          echo "image=${REGISTRY}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag_name }}
+          persist-credentials: false
+
+      - name: Compute version
+        id: version
+        run: |
+          # Handle both "v1.2.3" and "component-v1.2.3" tag formats
+          if [[ "$TAG_NAME" == *-v* ]]; then
+            VERSION="${TAG_NAME##*-v}"
+          else
+            VERSION="${TAG_NAME#v}"
+          fi
+          MAJOR="${VERSION%%.*}"
+          REST="${VERSION#*.}"
+          MINOR="${MAJOR}.${REST%%.*}"
+          {
+            echo "version=${VERSION}"
+            echo "major=${MAJOR}"
+            echo "minor=${MINOR}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        if: ${{ inputs.sign }}
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Build ─────────────────────────────────────────────────────────────
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.minor }}
+            type=raw,value=${{ steps.version.outputs.major }}
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.CONTEXT }}/${{ env.DOCKERFILE }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ inputs.platforms }}
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      # ── Sign & Attest ────────────────────────────────────────────────────
+      - name: Sign image with cosign
+        if: ${{ inputs.sign }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          IMAGE_REF="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          echo "Signing: ${IMAGE_REF}"
+          cosign sign --yes "$IMAGE_REF"
+          echo "Image signed successfully"
+
+      - name: Generate build attestation
+        if: ${{ inputs.attest }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Create success summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          {
+            echo "## Docker Image Released Successfully!"
+            echo ""
+            echo "**Image:** ${REGISTRY}/${IMAGE_NAME}"
+            echo "**Version:** ${VERSION}"
+            echo "**Platforms:** ${PLATFORMS}"
+            echo ""
+            echo "### Tags"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+            echo ""
+            echo "### Installation"
+            echo '```bash'
+            echo "docker pull ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+            echo '```'
+            echo ""
+            echo "### Verification"
+            echo '```bash'
+            echo "cosign verify ${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

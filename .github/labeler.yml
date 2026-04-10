@@ -1,0 +1,39 @@
+# Labeler configuration for automatic PR labelling
+# Documentation: https://github.com/actions/labeler
+
+# ─── Workflows ─────────────────────────────────────────────────────────────
+workflows:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+
+# ─── CI/CD ─────────────────────────────────────────────────────────────────
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/ci-*.yml"
+          - ".github/dependabot.yml"
+
+# ─── Release ──────────────────────────────────────────────────────────────
+release:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/release-please.yml"
+          - ".github/workflows/docker-build-push.yml"
+          - ".github/workflows/helm-package-push.yml"
+          - "release-please-config.json"
+          - ".release-please-manifest.json"
+
+# ─── Documentation ─────────────────────────────────────────────────────────
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "README.md"
+          - "CHANGELOG.md"
+
+# ─── GitHub templates & settings ───────────────────────────────────────────
+github:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - ".gitignore"

@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-label PRs based on changed files
+#
+# Supply-chain hardening:
+#   - Action pinned to commit SHA
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
+#   - Minimal permissions scoped per-job
+# ─────────────────────────────────────────────────────────────────────────────
+---
+name: Labeler
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+concurrency:
+  group: labeler-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  label:
+    name: Auto-label PR
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Apply labels based on changed files
+        uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # v6.0.1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: false
