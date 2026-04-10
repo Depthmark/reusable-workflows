@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Reusable CI workflow for Node.js (TypeScript) projects
 #
-# Runs lint, test, build, and audit jobs in parallel.
+# Runs lint, test, build, audit, and (optionally) Docker build jobs in parallel.
 #
 # Usage:
 #   jobs:
@@ -53,6 +53,18 @@ on:
         description: "Number of days to retain test artifacts"
         type: number
         default: 30
+      docker-build:
+        description: "Run a Docker build (no push) to validate the Dockerfile"
+        type: boolean
+        default: false
+      docker-context:
+        description: "Docker build context path"
+        type: string
+        default: "."
+      docker-file:
+        description: "Path to Dockerfile (relative to context)"
+        type: string
+        default: "Dockerfile"
 
 permissions: {}
 
@@ -235,3 +247,66 @@ jobs:
         env:
           AUDIT_LEVEL: ${{ inputs.audit-level }}
         run: npm audit --audit-level="$AUDIT_LEVEL"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    if: ${{ inputs.docker-build }}
+    needs: [validate-inputs]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      CONTEXT: ${{ inputs.docker-context }}
+      DOCKERFILE: ${{ inputs.docker-file }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Validate context path
+        run: |
+          if echo "$CONTEXT" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::docker-context must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$CONTEXT" == /* ]]; then
+            echo "::error::docker-context must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$CONTEXT" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::docker-context contains invalid characters"
+            exit 1
+          fi
+
+      - name: Validate dockerfile path
+        run: |
+          if echo "$DOCKERFILE" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "::error::docker-file must not contain path traversal (..)"
+            exit 1
+          fi
+          if [[ "$DOCKERFILE" == /* ]]; then
+            echo "::error::docker-file must be a relative path"
+            exit 1
+          fi
+          if ! [[ "$DOCKERFILE" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+            echo "::error::docker-file contains invalid characters"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build (no push)
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ${{ inputs.docker-context }}
+          file: ${{ inputs.docker-context }}/${{ inputs.docker-file }}
+          push: false
+          load: true
