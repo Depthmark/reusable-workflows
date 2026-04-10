@@ -27,8 +27,10 @@
 # Supply-chain hardening:
 #   - All actions pinned to commit SHA (immutable references)
 #   - No ${{ }} expressions in run: blocks (prevents script injection)
-#   - chart-dir validated against path traversal
+#   - All string inputs validated against path traversal and restricted charset
 #   - persist-credentials: false on all checkouts
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
 #   - Minimal permissions scoped per-job
 # ─────────────────────────────────────────────────────────────────────────────
 ---
@@ -91,31 +93,72 @@ permissions: {}
 jobs:
   kind-integration:
     name: KinD Integration Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Validate chart-dir
+      - name: Validate inputs
         env:
           CHART_DIR: ${{ inputs.chart-dir }}
+          RELEASE_NAME: ${{ inputs.release-name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          CLUSTER_NAME: ${{ inputs.cluster-name }}
+          TIMEOUT: ${{ inputs.timeout }}
+          BUILD_CONTEXT: ${{ inputs.docker-build-context }}
+          SOURCE_PATH: ${{ inputs.source-repository-path }}
         run: |
-          if echo "$CHART_DIR" | grep -qE '(^|/)\.\.(/|$)'; then
-            echo "::error::chart-dir must not contain path traversal (..)"
+          errors=0
+
+          # Validate path inputs against traversal and restricted charset
+          for pair in "chart-dir:$CHART_DIR" "docker-build-context:$BUILD_CONTEXT" "source-repository-path:$SOURCE_PATH"; do
+            name="${pair%%:*}"
+            value="${pair#*:}"
+            if echo "$value" | grep -qE '(^|/)\.\.(/|$)'; then
+              echo "::error::${name} must not contain path traversal (..)"
+              errors=$((errors + 1))
+            fi
+            if [[ "$value" == /* ]]; then
+              echo "::error::${name} must be a relative path"
+              errors=$((errors + 1))
+            fi
+            if ! [[ "$value" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+              echo "::error::${name} contains invalid characters"
+              errors=$((errors + 1))
+            fi
+          done
+
+          # Validate Kubernetes-safe names (release-name, namespace, cluster-name)
+          # RFC 1123: lowercase alphanumeric, hyphens, max 63 chars
+          for pair in "release-name:$RELEASE_NAME" "namespace:$NAMESPACE" "cluster-name:$CLUSTER_NAME"; do
+            name="${pair%%:*}"
+            value="${pair#*:}"
+            if ! [[ "$value" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+              echo "::error::${name} must be a valid RFC 1123 label (lowercase alphanumeric and hyphens, 1-63 chars)"
+              errors=$((errors + 1))
+            fi
+          done
+
+          # Validate timeout format (e.g., 120s, 5m, 1h)
+          if ! [[ "$TIMEOUT" =~ ^[0-9]+(s|m|h)$ ]]; then
+            echo "::error::timeout must be a duration (e.g., 120s, 5m, 1h)"
+            errors=$((errors + 1))
+          fi
+
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::Input validation failed with ${errors} error(s)"
             exit 1
           fi
-          if [[ "$CHART_DIR" == /* ]]; then
-            echo "::error::chart-dir must be a relative path"
-            exit 1
-          fi
-          if ! [[ "$CHART_DIR" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-            echo "::error::chart-dir contains invalid characters"
-            exit 1
-          fi
+          echo "All inputs validated"
 
       - name: Checkout source repository
         if: ${{ inputs.source-repository != '' }}

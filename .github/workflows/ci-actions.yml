@@ -19,6 +19,8 @@
 #   - persist-credentials: false on all checkouts
 #   - Tool versions pinned explicitly
 #   - Go module proxy provides checksum-db-backed integrity for Go tools
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
 #   - Minimal permissions scoped per-job
 # ─────────────────────────────────────────────────────────────────────────────
 ---
@@ -54,12 +56,17 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   actionlint:
     name: actionlint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read # Checkout repository
     env:
       ACTIONLINT_VERSION: ${{ inputs.actionlint-version }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -87,13 +94,18 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   zizmor:
     name: zizmor
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read # Checkout repository
     env:
       ZIZMOR_VERSION: ${{ inputs.zizmor-version }}
       ZIZMOR_FAIL_SEVERITY: ${{ inputs.zizmor-fail-severity }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -145,13 +157,18 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   poutine:
     name: poutine
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read # Checkout repository
     env:
       POUTINE_VERSION: ${{ inputs.poutine-version }}
       POUTINE_SKIP_RULES: ${{ inputs.poutine-skip-rules }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

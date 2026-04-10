@@ -25,6 +25,8 @@
 #   - Cosign keyless signing via Sigstore OIDC
 #   - SLSA build provenance attestation
 #   - SBOM generation
+#   - Pinned runner images (ubuntu-24.04)
+#   - StepSecurity harden-runner for runtime monitoring
 #   - Minimal permissions scoped per-job
 #   - GitHub environment protection rules supported
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +92,7 @@ permissions: {}
 jobs:
   docker:
     name: Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: ${{ inputs.environment }}
     permissions:
       contents: read # Checkout repository at tag
@@ -108,6 +110,11 @@ jobs:
       CONTEXT: ${{ inputs.context }}
       DOCKERFILE: ${{ inputs.dockerfile }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
       # ── Input validation ──────────────────────────────────────────────────
       - name: Validate tag_name
         run: |
