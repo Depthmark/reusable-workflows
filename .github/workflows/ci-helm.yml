@@ -39,6 +39,10 @@ on:
         description: "Whether to run helm-unittest"
         type: boolean
         default: true
+      helm-unittest-version:
+        description: "helm-unittest plugin version to install"
+        type: string
+        default: "v1.0.3"
 
 permissions: {}
 
@@ -211,7 +215,14 @@ jobs:
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
 
       - name: Install helm-unittest plugin
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.0.3 --verify=false
+        env:
+          HELM_UNITTEST_VERSION: ${{ inputs.helm-unittest-version }}
+        run: |
+          if ! [[ "$HELM_UNITTEST_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid helm-unittest version format: ${HELM_UNITTEST_VERSION}"
+            exit 1
+          fi
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --version "$HELM_UNITTEST_VERSION" --verify=false
 
       - name: Run unit tests
         env:
