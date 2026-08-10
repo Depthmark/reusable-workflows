@@ -15,6 +15,7 @@
 #         packages: write
 #         id-token: write
 #         attestations: write
+#         artifact-metadata: write
 #
 # Supply-chain hardening:
 #   - tag_name validated against strict regex before any use
@@ -86,6 +87,9 @@ on:
       image:
         description: "Full image name (registry/name)"
         value: ${{ jobs.docker.outputs.image }}
+      attestation-url:
+        description: "URL of the GitHub artifact attestation"
+        value: ${{ jobs.docker.outputs.attestation-url }}
 
 permissions: {}
 
@@ -99,10 +103,12 @@ jobs:
       packages: write # Push container images to GHCR
       id-token: write # Keyless cosign signing via Sigstore OIDC
       attestations: write # Generate SLSA build provenance
+      artifact-metadata: write # Record the published OCI artifact
     outputs:
       version: ${{ steps.version.outputs.version }}
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.image.outputs.image }}
+      attestation-url: ${{ steps.attest.outputs.attestation-url }}
     env:
       REGISTRY: ${{ inputs.registry }}
       TAG_NAME: ${{ inputs.tag_name }}
@@ -256,11 +262,13 @@ jobs:
           echo "Image signed successfully"
 
       - name: Generate build attestation
+        id: attest
         if: ${{ inputs.attest }}
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
+          subject-version: ${{ steps.version.outputs.version }}
           push-to-registry: true
 
       # ── Summary ───────────────────────────────────────────────────────────
@@ -270,6 +278,7 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
           PLATFORMS: ${{ inputs.platforms }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
         run: |
           {
             echo "## Docker Image Released Successfully!"
@@ -277,6 +286,9 @@ jobs:
             echo "**Image:** ${REGISTRY}/${IMAGE_NAME}"
             echo "**Version:** ${VERSION}"
             echo "**Platforms:** ${PLATFORMS}"
+            if [ -n "$ATTESTATION_URL" ]; then
+              echo "**Provenance:** ${ATTESTATION_URL}"
+            fi
             echo ""
             echo "### Tags"
             echo '```'
@@ -288,8 +300,18 @@ jobs:
             echo "docker pull ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
             echo '```'
             echo ""
-            echo "### Verification"
+            echo "### Signature Verification"
             echo '```bash'
-            echo "cosign verify ${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+            echo "cosign verify \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/' \\"
+            echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\"
+            echo "  ${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
             echo '```'
+            if [ -n "$ATTESTATION_URL" ]; then
+              echo ""
+              echo "### Provenance Verification"
+              echo '```bash'
+              echo "gh attestation verify oci://${REGISTRY}/${IMAGE_NAME}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
