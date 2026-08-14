@@ -89,7 +89,40 @@ jobs:
         run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
 
       - name: Run actionlint
-        run: actionlint
+        run: |
+          set +e
+          actionlint > /tmp/actionlint.txt 2>&1
+          ACTIONLINT_EXIT=$?
+          set -e
+
+          {
+            echo "## actionlint"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            if [ "$ACTIONLINT_EXIT" -eq 0 ]; then
+              echo "| Status | **Passed** |"
+            else
+              echo "| Status | **Failed** |"
+            fi
+            echo "| Version | \`${ACTIONLINT_VERSION}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/actionlint.txt ]; then
+            {
+              echo "<details>"
+              echo "<summary>Show findings</summary>"
+              echo ""
+              echo '```text'
+              cat /tmp/actionlint.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit "$ACTIONLINT_EXIT"
 
   # ───────────────────────────────────────────────────────────────────────────
   zizmor:
@@ -144,9 +177,37 @@ jobs:
           esac
 
           set +e
-          zizmor --format plain .github/workflows/
+          zizmor --format plain .github/workflows/ > /tmp/zizmor.txt 2>&1
           exit_code=$?
           set -e
+
+          {
+            echo "## zizmor"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            if [ "$exit_code" -lt "$threshold" ]; then
+              echo "| Status | **Passed** |"
+            else
+              echo "| Status | **Failed** |"
+            fi
+            echo "| Version | \`${ZIZMOR_VERSION}\` |"
+            echo "| Fail severity | \`${ZIZMOR_FAIL_SEVERITY}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/zizmor.txt ]; then
+            {
+              echo "<details>"
+              echo "<summary>Show findings</summary>"
+              echo ""
+              echo '```text'
+              cat /tmp/zizmor.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [ "$exit_code" -ge "$threshold" ]; then
             echo "::error::zizmor found findings at or above '${ZIZMOR_FAIL_SEVERITY}' severity"
@@ -196,7 +257,43 @@ jobs:
           if [ -n "$POUTINE_SKIP_RULES" ]; then
             SKIP_ARG="--skip ${POUTINE_SKIP_RULES}"
           fi
+
+          set +e
           # SKIP_ARG is intentionally unquoted for word splitting into arguments.
           # This value comes from the calling workflow YAML (trusted).
           # shellcheck disable=SC2086
-          poutine analyze_local . --fail-on-violation ${SKIP_ARG}
+          poutine analyze_local . --fail-on-violation ${SKIP_ARG} > /tmp/poutine.txt 2>&1
+          POUTINE_EXIT=$?
+          set -e
+
+          {
+            echo "## poutine"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            if [ "$POUTINE_EXIT" -eq 0 ]; then
+              echo "| Status | **Passed** |"
+            else
+              echo "| Status | **Failed** |"
+            fi
+            echo "| Version | \`${POUTINE_VERSION}\` |"
+            if [ -n "$POUTINE_SKIP_RULES" ]; then
+              echo "| Skipped rules | \`${POUTINE_SKIP_RULES}\` |"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/poutine.txt ]; then
+            {
+              echo "<details>"
+              echo "<summary>Show report</summary>"
+              echo ""
+              echo '```text'
+              cat /tmp/poutine.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit "$POUTINE_EXIT"
