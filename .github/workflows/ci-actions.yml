@@ -63,12 +63,12 @@ jobs:
       ACTIONLINT_VERSION: ${{ inputs.actionlint-version }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -80,7 +80,7 @@ jobs:
           fi
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6.0.2
         with:
           go-version: "stable"
           cache: false
@@ -89,7 +89,40 @@ jobs:
         run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
 
       - name: Run actionlint
-        run: actionlint
+        run: |
+          set +e
+          actionlint > /tmp/actionlint.txt 2>&1
+          ACTIONLINT_EXIT=$?
+          set -e
+
+          {
+            echo "## actionlint"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            if [ "$ACTIONLINT_EXIT" -eq 0 ]; then
+              echo "| Status | **Passed** |"
+            else
+              echo "| Status | **Failed** |"
+            fi
+            echo "| Version | \`${ACTIONLINT_VERSION}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/actionlint.txt ]; then
+            {
+              echo "<details>"
+              echo "<summary>Show findings</summary>"
+              echo ""
+              echo '```text'
+              cat /tmp/actionlint.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit "$ACTIONLINT_EXIT"
 
   # ───────────────────────────────────────────────────────────────────────────
   zizmor:
@@ -102,12 +135,12 @@ jobs:
       ZIZMOR_FAIL_SEVERITY: ${{ inputs.zizmor-fail-severity }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -126,7 +159,7 @@ jobs:
           esac
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
 
@@ -144,9 +177,37 @@ jobs:
           esac
 
           set +e
-          zizmor --format plain .github/workflows/
+          zizmor --format plain .github/workflows/ > /tmp/zizmor.txt 2>&1
           exit_code=$?
           set -e
+
+          {
+            echo "## zizmor"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            if [ "$exit_code" -lt "$threshold" ]; then
+              echo "| Status | **Passed** |"
+            else
+              echo "| Status | **Failed** |"
+            fi
+            echo "| Version | \`${ZIZMOR_VERSION}\` |"
+            echo "| Fail severity | \`${ZIZMOR_FAIL_SEVERITY}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/zizmor.txt ]; then
+            {
+              echo "<details>"
+              echo "<summary>Show findings</summary>"
+              echo ""
+              echo '```text'
+              cat /tmp/zizmor.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [ "$exit_code" -ge "$threshold" ]; then
             echo "::error::zizmor found findings at or above '${ZIZMOR_FAIL_SEVERITY}' severity"
@@ -165,12 +226,12 @@ jobs:
       POUTINE_SKIP_RULES: ${{ inputs.poutine-skip-rules }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -182,7 +243,7 @@ jobs:
           fi
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.0.2
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6.0.2
         with:
           go-version: "stable"
           cache: false
@@ -196,7 +257,43 @@ jobs:
           if [ -n "$POUTINE_SKIP_RULES" ]; then
             SKIP_ARG="--skip ${POUTINE_SKIP_RULES}"
           fi
+
+          set +e
           # SKIP_ARG is intentionally unquoted for word splitting into arguments.
           # This value comes from the calling workflow YAML (trusted).
           # shellcheck disable=SC2086
-          poutine analyze_local . --fail-on-violation ${SKIP_ARG}
+          poutine analyze_local . --fail-on-violation ${SKIP_ARG} > /tmp/poutine.txt 2>&1
+          POUTINE_EXIT=$?
+          set -e
+
+          {
+            echo "## poutine"
+            echo ""
+            echo "| Property | Value |"
+            echo "| --- | --- |"
+            if [ "$POUTINE_EXIT" -eq 0 ]; then
+              echo "| Status | **Passed** |"
+            else
+              echo "| Status | **Failed** |"
+            fi
+            echo "| Version | \`${POUTINE_VERSION}\` |"
+            if [ -n "$POUTINE_SKIP_RULES" ]; then
+              echo "| Skipped rules | \`${POUTINE_SKIP_RULES}\` |"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/poutine.txt ]; then
+            {
+              echo "<details>"
+              echo "<summary>Show report</summary>"
+              echo ""
+              echo '```text'
+              cat /tmp/poutine.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit "$POUTINE_EXIT"
