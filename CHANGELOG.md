@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0](https://github.com/Depthmark/reusable-workflows/compare/v1.0.1...v1.1.0) (2026-09-01)
+
+
+### Features
+
+* add go pkg release workflow ([81a8cb2](https://github.com/Depthmark/reusable-workflows/commit/81a8cb27bbcffbc7daca62a92e080221afc2c43c))
+* add summarry of the scanners in the workflow ([b429127](https://github.com/Depthmark/reusable-workflows/commit/b429127c5c086e5dd2fd17d66c218d6e12f18917))
+* add summarry of the scanners in the workflow ([8970f7e](https://github.com/Depthmark/reusable-workflows/commit/8970f7e9912477bfc0d145e8811251ac107b0315))
+
 ## [1.0.1](https://github.com/Depthmark/reusable-workflows/compare/v1.0.0...v1.0.1) (2026-04-10)
 
 
