@@ -17,6 +17,7 @@
 #         packages: write
 #         id-token: write
 #         attestations: write
+#         artifact-metadata: write
 #
 # Supply-chain hardening:
 #   - tag_name validated against strict regex before any use
@@ -85,6 +86,7 @@ jobs:
       packages: write # Push OCI artifact to GHCR
       id-token: write # Keyless cosign signing via Sigstore OIDC
       attestations: write # Generate SLSA build provenance
+      artifact-metadata: write # Record the published OCI artifact
     outputs:
       chart-name: ${{ steps.chart_info.outputs.chart_name }}
       chart-version: ${{ steps.chart_info.outputs.chart_version }}
@@ -238,7 +240,7 @@ jobs:
 
       - name: Generate build attestation
         if: ${{ inputs.attest }}
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/${{ steps.chart_info.outputs.oci_registry }}/charts/${{ steps.chart_info.outputs.chart_name }}
           subject-digest: ${{ steps.publish.outputs.digest }}
