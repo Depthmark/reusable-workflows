@@ -43,6 +43,7 @@ jobs:
         id: sts
         with:
           sts-url: https://github-sts.adelisle.com
+          audience: github-sts
           scope: Depthmark/reusable-workflows
           identity: release
           app: depthmark-release-bot
