@@ -8,7 +8,7 @@
 #     ci:
 #       uses: Depthmark/reusable-workflows/.github/workflows/ci-go.yml@main
 #       with:
-#         golangci-lint-version: "v2.11.4"
+#         golangci-lint-version: "v2.14.0"
 #
 # Supply-chain hardening:
 #   - All actions pinned to commit SHA (immutable references)
@@ -30,9 +30,13 @@ on:
         type: string
         default: "go.mod"
       golangci-lint-version:
-        description: "golangci-lint binary version (e.g., v2.11.4)"
+        description: "golangci-lint version (e.g., v2.14.0; goinstall requires a full version, not v2.14)"
         type: string
-        default: "v2.11.4"
+        default: "v2.14.0"
+      golangci-lint-install-mode:
+        description: "How golangci-lint is installed: goinstall (built with the project's Go version) or binary (prebuilt, faster, but fails when go.mod targets a newer Go than the binary was built with)"
+        type: string
+        default: "binary"
       test-flags:
         description: "Flags passed to go test (e.g., -race -coverprofile=coverage.out -v)"
         type: string
@@ -108,6 +112,7 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: ${{ inputs.golangci-lint-version }}
+          install-mode: ${{ inputs.golangci-lint-install-mode }}
 
   # ───────────────────────────────────────────────────────────────────────────
   test:
