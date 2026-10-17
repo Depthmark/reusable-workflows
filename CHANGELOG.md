@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/Depthmark/reusable-workflows/compare/v1.1.0...v1.2.0) (2026-10-15)
+
+
+### ✨ Features
+
+* bumo golang-ci-lint version and add option for install mode ([8dad9d8](https://github.com/Depthmark/reusable-workflows/commit/8dad9d8cfd44a79dc15252a634745a1e127df580))
+* bumo golang-ci-lint version and add option for install mode ([b7501b8](https://github.com/Depthmark/reusable-workflows/commit/b7501b85182cdad7776ad5710a22dcd3566ab7e3))
+
+
+### 📦 Dependencies
+
+* **deps:** bump the github-actions group across 1 directory with 4 updates ([8bd49ad](https://github.com/Depthmark/reusable-workflows/commit/8bd49ad07dd11961fa28877c4dfb0c4db367bb75))
+* **deps:** bump the github-actions group across 1 directory with 4 updates ([ccdb132](https://github.com/Depthmark/reusable-workflows/commit/ccdb132dc7aed8fb41561489255ae45f598b495b))
+
 ## [1.1.0](https://github.com/Depthmark/reusable-workflows/compare/v1.0.1...v1.1.0) (2026-09-01)
 
 
